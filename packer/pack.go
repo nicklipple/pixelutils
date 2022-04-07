@@ -2,7 +2,6 @@ package packer
 
 import (
 	"fmt"
-	"log"
 	"sort"
 
 	"github.com/dusk125/pixelutils"
@@ -97,13 +96,13 @@ func (packer Packer) SpriteFrom(id int) *pixel.Sprite {
 }
 
 // Grows the packer space by the given amount
-func (packer *Packer) grow(growSize pixel.Vec) {
+func (packer *Packer) grow(growSize pixel.Vec) error {
 	packer.bounds = rect(0, 0, packer.bounds.W()+growSize.X, packer.bounds.H()+growSize.Y)
-	packer.reinsert(false)
+	return packer.reinsert(false)
 }
 
 // Aids in optimizing and growing the texture space
-func (packer *Packer) reinsert(optimze bool) {
+func (packer *Packer) reinsert(optimze bool) error {
 	// Pull out of the sprites from the atlas
 	sprites := make(spriteList, 0)
 	for id := range packer.images {
@@ -125,14 +124,16 @@ func (packer *Packer) reinsert(optimze bool) {
 	// Re-insert sprites
 	for _, cont := range sprites {
 		if err := packer.Insert(cont.id, cont.sprite); err != nil {
-			log.Fatalln(err)
+			// log.Fatalln(err)
+			return err
 		}
 	}
+	return nil
 }
 
 // Defragments the texture space to try and minimize wasted space
-func (packer *Packer) Optimize() {
-	packer.reinsert(true)
+func (packer *Packer) Optimize() error {
+	return packer.reinsert(true)
 }
 
 // Replaces replaces the given id with the new sprite (optimizing the atlas).
@@ -165,7 +166,10 @@ func (packer *Packer) insert(bounds pixel.Rect, id int) (space pixel.Rect, err e
 			return pixel.ZR, fmt.Errorf("Couldn't find an empty space")
 		}
 
-		packer.grow(bounds.Size())
+		err := packer.grow(bounds.Size())
+		if err != nil {
+			return pixel.ZR, err
+		}
 		candidateIndex, found = packer.find(bounds)
 		if !found {
 			return pixel.ZR, fmt.Errorf("Failed to find space after growth")
@@ -216,8 +220,17 @@ func (packer *Packer) Insert(id int, image *pixel.Sprite) (err error) {
 // Inserts the image with the given id and additional insertion flags.
 func (packer *Packer) InsertV(id int, image *pixel.Sprite, flags uint8) (err error) {
 	pic := image.Picture().(*pixel.PictureData)
+	frame := image.Frame()
+	newPic := pixel.MakePictureData(pixel.R(0, 0, frame.W(), frame.H()))
+	i := 0
+	for y := frame.Min.Y; y < frame.Max.Y; y++ {
+		for x := frame.Min.X; x < frame.Max.X; x++ {
+			newPic.Pix[i] = pic.Pix[pic.Index(pixel.V(float64(x), float64(y)))]
+			i++
+		}
+	}
 
-	return packer.InsertPictureDataV(id, pic, flags)
+	return packer.InsertPictureDataV(id, newPic, flags)
 }
 
 // Inserts the PictureData with the given id into the texture space; default values.
@@ -230,14 +243,19 @@ func (packer *Packer) InsertPictureDataV(id int, pic *pixel.PictureData, flags u
 	bounds := pic.Bounds()
 
 	if flags&OptimizeOnInsert != 0 {
-		packer.Optimize()
+		err := packer.Optimize()
+		if err != nil {
+			return err
+		}
 	}
 
 	var space pixel.Rect
-	if space, err = packer.insert(bounds, id); err != nil {
-		return err
+	space, err = packer.insert(bounds, id)
+	if err != nil {
+		for err != nil {
+			space, err = packer.insert(bounds, id)
+		}
 	}
-
 	for y := 0; y < int(bounds.H()); y++ {
 		for x := 0; x < int(bounds.W()); x++ {
 			i := packer.pic.Index(pixel.V(space.Min.X+float64(x), space.Min.Y+float64(y)))
